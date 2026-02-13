@@ -1,8 +1,8 @@
 # NSFC_scraper
 快速下载国家自然基金NSFC在20xx-20xx之间关于某关键词的脚本
-# 青塔自科云基金项目数据采集脚本
+# 国家自然基金项目数据采集脚本
 
-一个用于从青塔自科云平台批量爬取基金项目数据的 Python 工具，支持自定义关键词搜索和年份范围筛选。
+一个用于从批量采集国家自然基金项目数据的 Python 工具，支持自定义关键词搜索和年份范围筛选。
 
 ## 功能特性
 
@@ -106,7 +106,7 @@ python scrape_fund.py --keyword "新能源" --wait 120
 请在浏览器中登录（如果需要），等待30秒...
 已保存cookies
 
-正在访问搜索页: https://fund.cingta.com/fund/list?keyword=电动汽车&searchtype=(立项年份=2022-2026)
+正在访问搜索页: https://fund.xxx.com/fund/list?keyword=电动汽车&searchtype=(立项年份=2022-2026)
 等待搜索结果加载...
 找到列表项!
 结果信息: 项目数 256
