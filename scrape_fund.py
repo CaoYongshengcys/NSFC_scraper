@@ -21,6 +21,7 @@ def scrape_fund(keyword, start_year=2022, end_year=2026, login_wait=30):
         login_wait: 登录等待时间（秒）
     """
     all_projects = []
+    seen_titles = set()  # 用于去重
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -79,10 +80,24 @@ def scrape_fund(keyword, start_year=2022, end_year=2026, login_wait=30):
         if total_elem:
             total_text = total_elem.inner_text()
             print(f"结果信息: {total_text}")
-            total_match = re.search(r'项目数\s*(\d+)', total_text)
+            # 修复正则表达式，使其能匹配带逗号的数字
+            total_match = re.search(r'项目数\s*([\d,]+)', total_text)
             if total_match:
-                total_count = int(total_match.group(1))
+                # 移除逗号并转换为整数
+                total_count = int(total_match.group(1).replace(',', ''))
                 print(f"总项目数: {total_count}")
+        else:
+            # 尝试其他方式获取总项目数
+            try:
+                # 可能网站使用了不同的元素或格式
+                total_text = page.inner_text()
+                # 查找包含项目数的文本
+                total_match = re.search(r'项目数\s*([\d,]+)', total_text)
+                if total_match:
+                    total_count = int(total_match.group(1).replace(',', ''))
+                    print(f"从页面文本中找到总项目数: {total_count}")
+            except Exception as e:
+                print(f"无法获取总项目数: {e}")
         
         # 查找列表项
         items = page.query_selector_all('.list-item')
@@ -94,16 +109,54 @@ def scrape_fund(keyword, start_year=2022, end_year=2026, login_wait=30):
             return []
         
         page_num = 1
-        max_pages = 100
+        max_pages = 1000  # 增加最大页数
+        retry_count = 0
+        max_retries = 3
         
-        while page_num <= max_pages and len(items) > 0:
+        while page_num <= max_pages:
             print(f"\n正在解析第 {page_num} 页...")
+            
+            # 等待页面稳定
+            time.sleep(1)
+            
+            # 等待列表项出现
+            try:
+                page.wait_for_selector('.list-item', timeout=10000)
+            except:
+                print("等待列表项超时")
+                if retry_count < max_retries:
+                    retry_count += 1
+                    print(f"重试 {retry_count}/{max_retries}...")
+                    time.sleep(3)
+                    continue
+                else:
+                    print("重试次数已达上限，退出")
+                    break
+            
+            # 等待加载动画消失（如果有的话）
+            try:
+                page.wait_for_selector('.el-loading-mask', state='hidden', timeout=5000)
+            except:
+                pass
             
             items = page.query_selector_all('.list-item')
             print(f"当前页找到 {len(items)} 个项目")
             
             if len(items) == 0:
-                break
+                if retry_count < max_retries:
+                    retry_count += 1
+                    print(f"未找到项目，重试 {retry_count}/{max_retries}...")
+                    time.sleep(3)
+                    page.reload()
+                    time.sleep(3)
+                    continue
+                else:
+                    print("重试次数已达上限，退出")
+                    break
+            
+            # 重置重试计数
+            retry_count = 0
+            page_project_count = 0
             
             for item in items:
                 project = {}
@@ -114,6 +167,11 @@ def scrape_fund(keyword, start_year=2022, end_year=2026, login_wait=30):
                     title_text = title_elem.inner_text().strip()
                     title_text = re.sub(r'收藏.*$', '', title_text).strip()
                     project['title'] = title_text
+                    
+                    # 去重检查
+                    if title_text in seen_titles:
+                        continue
+                    seen_titles.add(title_text)
                 
                 # 获取详细信息
                 item_wrap = item.query_selector('.item-wrap')
@@ -149,8 +207,9 @@ def scrape_fund(keyword, start_year=2022, end_year=2026, login_wait=30):
                 
                 if project.get('title'):
                     all_projects.append(project)
+                    page_project_count += 1
             
-            print(f"已收集 {len(all_projects)} 个项目")
+            print(f"本页新增 {page_project_count} 个项目，已收集 {len(all_projects)} 个项目")
             
             if total_count > 0 and len(all_projects) >= total_count:
                 print("已收集所有项目")
@@ -159,22 +218,58 @@ def scrape_fund(keyword, start_year=2022, end_year=2026, login_wait=30):
             # 查找下一页按钮
             next_btn = page.query_selector('.el-pagination .btn-next')
             if not next_btn:
+                # 尝试其他选择器
+                next_btn = page.query_selector('button.btn-next')
+            if not next_btn:
+                next_btn = page.query_selector('.el-pagination button:last-child')
+            
+            if not next_btn:
                 print("找不到下一页按钮，退出")
                 break
             
             is_disabled = next_btn.get_attribute('disabled')
             btn_class = next_btn.get_attribute('class') or ''
-            if is_disabled or 'disabled' in btn_class:
+            if is_disabled is not None or 'is-disabled' in btn_class or 'disabled' in btn_class:
                 print("已到达最后一页")
                 break
             
             try:
+                # 滚动到分页区域确保可见
+                next_btn.scroll_into_view_if_needed()
+                time.sleep(0.5)
+                
+                # 记录当前第一个项目的标题，用于检测页面是否真的翻页了
+                first_item = page.query_selector('.list-item .title')
+                old_first_title = first_item.inner_text() if first_item else ""
+                
+                # 点击下一页
                 next_btn.click()
                 page_num += 1
+                
+                # 等待页面变化
                 time.sleep(2)
+                
+                # 等待新内容加载
+                for _ in range(10):
+                    time.sleep(0.5)
+                    new_first_item = page.query_selector('.list-item .title')
+                    new_first_title = new_first_item.inner_text() if new_first_item else ""
+                    if new_first_title and new_first_title != old_first_title:
+                        break
+                else:
+                    print("页面内容未变化，可能翻页失败")
+                    # 额外等待
+                    time.sleep(2)
+                
             except Exception as e:
                 print(f"点击下一页失败: {e}")
-                break
+                if retry_count < max_retries:
+                    retry_count += 1
+                    print(f"重试 {retry_count}/{max_retries}...")
+                    time.sleep(3)
+                    continue
+                else:
+                    break
         
         browser.close()
     
